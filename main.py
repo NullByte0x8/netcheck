@@ -8,7 +8,7 @@ import os
 import getopt
 # import dns  # dnspython, pypi, 2.2.1
 
-iplistdir = "/var/lib/netcheck/domains"
+iplistdir = "/run/netcheck/ips"
 successcount = 10
 healthPercentage = 100
 mode = 1  # 1 = TCP on port 80; 2 = DNS check; 3 = ICMP echo
