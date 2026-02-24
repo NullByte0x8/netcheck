@@ -6,9 +6,12 @@ import time
 import random
 import os
 import getopt
+import posix
+import asyncio
 # import dns  # dnspython, pypi, 2.2.1
 
 iplistdir = "/run/netcheck/ips/latest"
+pipe_path = "/run/netcheck/pipe"
 successcount = 10
 healthPercentage = 100
 mode = 1  # 1 = TCP on port 80; 2 = DNS check; 3 = ICMP echo
@@ -18,6 +21,37 @@ icmpweight = 33
 totalweight = tcpweight + dnsweight + icmpweight
 highestweight = max(tcpweight, dnsweight, icmpweight)
 lowestweight = min(tcpweight, dnsweight, icmpweight)
+
+try:
+    posix.mkfifo(pipe_path)
+    print("FIFO created")
+except FileExistsError:
+    print("FIFO exists, continue...")
+except OSError as e:
+    print(f"FIFO creation failed: {e}")
+    sys.exit(2)
+
+def out(val):
+    if(type(val) == int):
+        pass
+    else:
+        raise TypeError("out(): val must be int")
+        return False
+    try:
+        with open(pipe_path, "w") as pipe:
+            pipe.write(val)
+            pipe.close
+    except OSError as e:
+        raise Exception(f"out(): {e}")
+        return False
+
+def quit(val, msg):
+    try:
+        os.remove(pipe_path)
+    except Exception as e:
+        print(e)
+    print(str(msg))
+    sys.exit(int(val))
 
 try:
     opts, args = getopt.getopt(sys.argv, "hm:", ["help", "mark="])
@@ -44,6 +78,12 @@ while True:
     except ZeroDivisionError:
         healthPercentage = 100
     print("health %: " + str(healthPercentage) + "; success count:" + str(successcount))
+    try:
+        out(int(healthPercentage))
+    except KeyboardInterrupt:
+        quit(0, "\nexiting...")
+    except Exception as e:
+        quit(2, str(e))
     if successcount >= 10:
         successcount -= 1
     try:
@@ -76,6 +116,11 @@ while True:
                     s.close()
         # add other modes
     except KeyboardInterrupt:
-        print("exiting...")
+        quit(0, "\nexiting...")
         sys.exit()
-    time.sleep(0.5)
+    try:
+        time.sleep(0.5)
+    except KeyboardInterrupt:
+        quit(0, "\nexiting...")
+        sys.exit()
+
