@@ -46,6 +46,8 @@ parser=optparse.OptionParser()
 parser.add_option("-d", "--debug", action="store_true", dest="debug", help="increase logging")
 parser.add_option("-s", "--stdout", action="store_true", dest="stdout", help="log to stdout as well as stderr")
 parser.add_option("-m", "--mark", dest="mark", metavar="MARK", help="use so_mark MARK for packets")
+parser.add_option("-D", "--dir", dest="iplistdir", metavar="DIR", help="look for ip files in DIR")
+parser.add_option("-f", "--file", dest="pipe_path", metavar="FILE", help="use FIFO at FILE")
 (opts, args) = parser.parse_args()
 
 if debug: log(f"opts: {opts}; args: {args}")
