@@ -32,7 +32,7 @@ colors = (
 def out(val):
     assert type(val) == int
     try:
-        pipe.write(str(val) + " ")
+        pipe.write(str(val) + "\n")
         pipe.close
         log(0, f"wrote {val} to pipe")
     except OSError as e:
@@ -59,7 +59,6 @@ parser.add_option("-f", "--file", dest="pipe_path", metavar="FILE", help="use FI
 
 log(0, f"opts: {opts}; args: {args}")
 
-
 # create fifo
 try:
     posix.mkfifo(pipe_path)
@@ -71,7 +70,7 @@ except OSError as e:
     log(2, f"FIFO creation failed at {pipe_path}: {e}")
     sys.exit(2)
 
-with open(pipe_path, "w") as pipe:
+with open(pipe_path, "w", buffering=1) as pipe:
     while True:
         # moderandomiser = random.randint(1, 100)
         # if moderandomiser <= 33:
