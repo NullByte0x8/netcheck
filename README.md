@@ -79,6 +79,4 @@ Thus, the idea for this script was born.
 
 ## Current state
 
-The script currently is a rough proof of concept, and doesn't use `asyncio`
-yet.
-
+The script currently uses `asyncio` to send TCP connection packets to a list of web servers with adjustable frequency, and outputs a network health value, expressed as a percentage, to a named pipe.
