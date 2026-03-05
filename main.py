@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 
-import socket
 import sys
 import time
 import random
@@ -9,27 +8,30 @@ import optparse
 import posix
 import asyncio
 import statistics
-# import dns  # dnspython, pypi, 2.2.1
 
 debug = None
 mark = ""
 iplistdir = ""
 pipe_path = ""
-tcp_timeout = 1
+tcp_timeout = 0.2
 tcp_port = 80
-tcp_amount = 10
-healthy_threshold = 90
-healthy_sleep = 5
-unhealthy_sleep = 0.5
+tcp_amount = 3 # amount of tcp_attempt()s allowed to run concurrently
+eval_interval = 0.5 # main() will iterate this often
+success_delay = 0.2 # tcp_attempt() will sleep this long after a successful attempt before exiting to control cpu and network usage
 colors = (
         "\x1b[0m",   # end of color (DEBUG)
         "\x1b[93m",  # bright yellow (WARN)
         "\x1b[91m"   # bright red (ERROR)
 )
 
+tasks = []
+results = []
+
+sem = asyncio.Semaphore(tcp_amount)
+
+
 # write output value to fifo
-def out(val):
-    assert type(val) == int
+def out(val: int, pipe):
     try:
         pipe.write(str(val) + "\n")
         pipe.close
@@ -39,7 +41,7 @@ def out(val):
         return False
 
 # log messages to stderr, and, if stdout flag is set, to stdout
-def log(sev, msg):
+def log(sev: str, msg):
     match sev:
         case "dbg":
             if debug >= 2: print(f"{colors[0]}[DEBUG] {msg}", file=sys.stderr)
@@ -94,61 +96,76 @@ def create_fifo():
         sys.exit(2)
 
 # run a single tcp connection attempt
-async def try_tcp(host, port, hostname, timeout):
-    log("dbg", f"trying tcp for {host}, {hostname}")
-    async def inner():
+async def tcp_attempt(ip: str):
+    # use the semaphore's limit to adjust CPU and network usage
+    async with sem:
+        # read hostname from file, use only for debugging
+        if debug >= 2:
+            with open(f"{iplistdir}/{ip}", "r") as f:
+                hostname = f.read().strip()
         try:
-            reader, writer = await asyncio.open_connection(host, port)
+            # attempt a tcp connection with a 0.2s timeout
+            # this timeout should always be shorter than the asyncio.sleep() in main()
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, tcp_port), tcp_timeout)
             writer.close()
             await writer.wait_closed()
-        except ConnectionRefusedError:
-            log("dbg", f"connection to {host}, {hostname} refused (success)")
-        except Exception as e:
-            log("dbg", f"connection to {host}, {hostname} failed: {e}")
+        except ConnectionRefusedError as e:
+            # connection refused is a success
+            if debug >= 2:
+                log("dbg", f"{ip}, {hostname}: {e}")
+            await add_result(True)
+            await asyncio.sleep(success_delay)
+            return True
+        except TimeoutError:
+            if debug >= 2:
+                log("dbg", f"{ip}, {hostname}: timeout")
+            await add_result(False)
             return False
-        log("dbg", f"connection to {host}, {hostname} successful")
+        except Exception as e:
+            if debug >= 2:
+                log("dbg", f"{ip}, {hostname}: {e}")
+            await add_result(False)
+            return False
+        log("dbg", f"{ip}, {hostname}: success")
+        await add_result(True)
+        await asyncio.sleep(success_delay)
         return True
-    try:
-        async with asyncio.timeout(timeout):
-            ret = await inner()
-    except TimeoutError:
-        log("dbg", f"connection to {host}, {hostname} failed")
-        return False
-    return ret
 
-# run try_tcp tcp_amount times concurrently
-async def run_tcp_test(timeout):
-    ip_list = random.sample(os.listdir(iplistdir), tcp_amount)
-    hn_list = []
-    success = 0
-    for filename in ip_list:
-        with open(f"{iplistdir}/{filename}", "r") as f:
-            hn = f"{f.read().strip()}"
-            hn_list.append(hn)
-    log("dbg", f"ip list for tcp test: {ip_list}")
-    log("dbg", f"hostname list for tcp test: {hn_list}")
-    results = await asyncio.gather(
-            *[try_tcp(ip_list[i], tcp_port, hn_list[i], timeout) for i in range(len(ip_list))])
-    log("dbg", f"results: {results}")
-    for r in results:
-        if r:
-            success += 1
-    log("dbg", f"successes in ip test: {success}")
-    return success
+# returns the integer percentage of successes in results[]
+def evaluate():
+    return int(results.count(True) / len(results) * 100)
+
+# add val to results[], trim results[] to 10 items
+async def add_result(val: bool):
+    while len(results) > 10:
+        results.pop(0)
+    results.append(val)
 
 async def main():
     parse_opts()
+    ip_list = os.listdir(iplistdir)
+    create_fifo()
     with open(pipe_path, "w", buffering=1) as pipe:
-        create_fifo()
-        timeout = tcp_timeout
         while True:
-            result = await run_tcp_test(timeout)
-            perc = int(result / tcp_amount * 100)
-            log("dbg", f"network health: {perc}")
-            if perc >= healthy_threshold:
-                time.sleep(healthy_sleep)
-            else:
-                time.sleep(unhealthy_sleep)
+            # avoid zero division
+            if len(results):
+                out(evaluate(), pipe)
+    
+            # remove tasks that have finished from tasks[];
+            # the pointers seem to get automatically removed afterwards, so there
+            # probably isn't a memory leak, but a proper test is needed
+            for task in tasks:
+                if task.done():
+                    tasks.remove(task)
             
+            # if we are running out of tasks, make a new task for each ip in the list
+            if len(tasks) <= 50:
+                log("dbg", "adding tasks")
+                for ip in ip_list:
+                    tasks.append(asyncio.create_task(tcp_attempt(ip)))
+    
+            # tasks run here
+            await asyncio.sleep(eval_interval)
+
 
 asyncio.run(main())
