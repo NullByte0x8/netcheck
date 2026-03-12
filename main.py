@@ -8,6 +8,7 @@ import optparse
 import posix
 import asyncio
 import statistics
+import icmplib
 
 debug = None
 mark = ""
@@ -15,9 +16,13 @@ iplistdir = ""
 pipe_path = ""
 tcp_timeout = 0.2
 tcp_port = 80
-tcp_amount = 3 # amount of tcp_attempt()s allowed to run concurrently
+icmp_timeout = 0.2
+concurrent_amount = 3 # amount of attempt tasks allowed to run concurrently
 eval_interval = 0.5 # main() will iterate this often
-success_delay = 0.2 # tcp_attempt() will sleep this long after a successful attempt before exiting to control cpu and network usage
+success_delay = 0.2 # attempt tasks will sleep this long after a successful attempt before exiting to control cpu and network usage
+tcp_weight = 1 # relative amount of tcp tasks 
+icmp_weight = 1 # relative amount of icmp tasks
+modes = [] # used for weighted random selection. this is very ugly, better solution needed!
 colors = (
         "\x1b[0m",   # end of color (DEBUG)
         "\x1b[93m",  # bright yellow (WARN)
@@ -27,8 +32,7 @@ colors = (
 tasks = []
 results = []
 
-sem = asyncio.Semaphore(tcp_amount)
-
+sem = asyncio.Semaphore(concurrent_amount)
 
 # write output value to fifo
 def out(val: int, pipe):
@@ -111,22 +115,36 @@ async def tcp_attempt(ip: str):
             await writer.wait_closed()
         except ConnectionRefusedError as e:
             # connection refused is a success
-            if debug >= 2:
-                log("dbg", f"{ip}, {hostname}: {e}")
+            log("dbg", f"TCP {ip}, {hostname}: {e}")
             await add_result(True)
             await asyncio.sleep(success_delay)
             return True
         except TimeoutError:
-            if debug >= 2:
-                log("dbg", f"{ip}, {hostname}: timeout")
+            log("dbg", f"TCP {ip}, {hostname}: timeout")
             await add_result(False)
             return False
         except Exception as e:
-            if debug >= 2:
-                log("dbg", f"{ip}, {hostname}: {e}")
+            log("dbg", f"TCP {ip}, {hostname}: {e}")
             await add_result(False)
             return False
-        log("dbg", f"{ip}, {hostname}: success")
+        log("dbg", f"TCP {ip}, {hostname}: success")
+        await add_result(True)
+        await asyncio.sleep(success_delay)
+        return True
+
+# run a single icmp echo attempt
+async def icmp_attempt(ip: str):
+    async with sem:
+        if debug >= 2:
+            with open(f"{iplistdir}/{ip}", "r") as f:
+                hostname = f.read().strip()
+        try:
+            host = await asyncio.wait_for(icmplib.async_ping(ip, count=1, timeout=icmp_timeout+1), icmp_timeout)
+        except Exception as e:
+            log("dbg", f"ICMP {ip}, {hostname}: {e}")
+            await add_result(False)
+            return False
+        log("dbg", f"ICMP {ip}, {hostname}: success")
         await add_result(True)
         await asyncio.sleep(success_delay)
         return True
@@ -145,6 +163,10 @@ async def main():
     parse_opts()
     ip_list = os.listdir(iplistdir)
     create_fifo()
+    for i in range(tcp_weight):
+        modes.append("tcp")
+    for i in range(icmp_weight):
+        modes.append("icmp")
     with open(pipe_path, "w", buffering=1) as pipe:
         while True:
             # avoid zero division
@@ -162,7 +184,11 @@ async def main():
             if len(tasks) <= 50:
                 log("dbg", "adding tasks")
                 for ip in ip_list:
-                    tasks.append(asyncio.create_task(tcp_attempt(ip)))
+                    match random.choice(modes):
+                        case "tcp":
+                            tasks.append(asyncio.create_task(tcp_attempt(ip)))
+                        case "icmp":
+                            tasks.append(asyncio.create_task(icmp_attempt(ip)))
     
             # tasks run here
             await asyncio.sleep(eval_interval)
